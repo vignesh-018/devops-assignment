@@ -1,0 +1,6 @@
+rg_name = "abbAKSRG"
+rg_location = "West US 2"
+vnet_name = "AKSVNET"
+subnet01_name = "Subnet01"
+acr_name = "abbtestacr456"
+aks_name = "abbaks456"

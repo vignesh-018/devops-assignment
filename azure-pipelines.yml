@@ -1,0 +1,238 @@
+trigger:
+- none
+
+pool:
+  name: 'Default'
+  demands:
+  - agent.name -equals dockervm
+
+variables:
+  SQLServer: 'abbtest456'
+  DatabaseName: 'abbdb'
+  ACR: abbtestacr456.azurecr.io
+  #SQLServerfqdn: 'abbserver56.database.windows.net'
+
+
+stages:
+- stage: Build
+  displayName: abbAKS Build
+  jobs:
+  - job: Build
+    steps:
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+        KeyVaultName: 'myservice'
+        SecretsFilter: '*'
+        RunAsPreJob: true
+      
+    - task: replacetokens@5
+      inputs:
+        rootDirectory: '$(build.sourcesdirectory)/env'
+        targetFiles: 'main.tf'
+        encoding: 'auto'
+        tokenPattern: 'rm'
+        writeBOM: true
+        actionOnMissing: 'warn'
+        keepToken: false
+        actionOnNoFiles: 'continue'
+        enableTransforms: false
+        enableRecursion: false
+        useLegacyPattern: false
+        enableTelemetry: true
+    
+
+    - task: TerraformInstaller@0
+      inputs:
+        terraformVersion: 'latest'
+    
+    - task: TerraformTaskV2@2
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(build.sourcesdirectory)/env'
+        backendServiceArm: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+        backendAzureRmResourceGroupName: 'powershell-grp'
+        backendAzureRmStorageAccountName: 'appstore5670008989'
+        backendAzureRmContainerName: 'abbbackend'
+        backendAzureRmKey: 'abb.tfstate'
+ 
+    - task: TerraformTaskV2@2
+      inputs:
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(build.sourcesdirectory)/env'
+        commandOptions: '--auto-approve'
+        environmentServiceNameAzureRM: 'Free Trial(b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+        
+- stage: Docker_Build
+  displayName: Docker Build
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployToDocker
+    displayName: "Deploy Docker Image"
+    environment: DockerEnv
+  - job: Docker_Build
+    displayName: Docker Build
+    pool:
+      name: 'Default'
+      demands:
+      - agent.name -equals dockerunbun
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+        KeyVaultName: 'myservice'
+        SecretsFilter: '*'
+        RunAsPreJob: true
+    - task: replacetokens@5
+      inputs:
+        rootDirectory: '$(build.sourcesdirectory)/src/MyHealth.Web/'
+        targetFiles: 'appsettings.json'
+        encoding: 'auto'
+        tokenPattern: 'rm'
+        writeBOM: true
+        actionOnMissing: 'warn'
+        keepToken: false
+        actionOnNoFiles: 'continue'
+        enableTransforms: false
+        enableRecursion: false
+        useLegacyPattern: false
+        enableTelemetry: true
+
+    # - task: DockerInstaller@0
+    #   inputs:
+    #     dockerVersion: '17.09.0-ce'
+    - task: DockerCompose@1
+      inputs:
+        containerregistrytype: 'Azure Container Registry'
+        azureSubscription: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+        azureContainerRegistry: '{"loginServer":"abbtestacr456.azurecr.io", "id" : "/subscriptions/b53f3d4a-e250-41ce-bc28-6b7f37068efb/resourceGroups/abbAKSRG/providers/Microsoft.ContainerRegistry/registries/abbtestacr456"}'
+        dockerComposeFile: '$(build.sourcesdirectory)/docker-compose.ci.build.yml'
+        dockerComposeFileArgs: 'DOCKER_BUILD_SOURCE='
+        action: 'Run services'
+        detached: false
+
+    - task: DockerCompose@1
+      inputs:
+        containerregistrytype: 'Azure Container Registry'
+        azureSubscription: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+        azureContainerRegistry: '{"loginServer":"abbtestacr456.azurecr.io", "id" : "/subscriptions/b53f3d4a-e250-41ce-bc28-6b7f37068efb/resourceGroups/abbAKSRG/providers/Microsoft.ContainerRegistry/registries/abbtestacr456"}'
+        dockerComposeFile: '**/docker-compose.yml'
+        dockerComposeFileArgs: 'DOCKER_BUILD_SOUCE='
+        action: 'Build services'
+
+    - task: DockerCompose@1
+      inputs:
+        containerregistrytype: 'Azure Container Registry'
+        azureSubscription: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+        azureContainerRegistry: '{"loginServer":"abbtestacr456.azurecr.io", "id" : "/subscriptions/b53f3d4a-e250-41ce-bc28-6b7f37068efb/resourceGroups/abbAKSRG/providers/Microsoft.ContainerRegistry/registries/abbtestacr456"}'
+        dockerComposeFile: '**/docker-compose.yml'
+        dockerComposeFileArgs: 'DOCKER_BUILD_SOURCE='
+        action: 'Push services'
+
+    - task: replacetokens@5
+      inputs:
+        rootDirectory: '$(build.sourcesdirectory)'
+        targetFiles: 'mhc-aks.yaml'
+        encoding: 'auto'
+        tokenPattern: 'rm'
+        writeBOM: true
+        actionOnMissing: 'warn'
+        keepToken: false
+        actionOnNoFiles: 'continue'
+        enableTransforms: false
+        enableRecursion: false
+        useLegacyPattern: false
+        enableTelemetry: true
+        
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(build.sourcesdirectory)'
+        Contents: |
+          **/mhc-aks.yaml
+          **/*.dacpac
+        TargetFolder: '$(build.artifactstagingdirectory)'
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+         PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+         ArtifactName: 'drop'
+         publishLocation: 'Container'
+        
+- stage: DB_Build
+  displayName: DB Build
+  dependsOn: Docker_Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployDB
+    displayName: "Deploy DB"
+    environment: prod
+  - job: DB_Build
+    displayName: DB Build
+    pool:
+      name: 'Default'
+      demands:
+      - agent.name -equals dockervm
+      strategy:
+        runOnce:
+          deploy:
+           steps:
+           - task: AzureKeyVault@2
+             inputs:
+               azureSubscription: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+               KeyVaultName: 'myservice'
+               SecretsFilter: '*'
+               RunAsPreJob: true
+
+           - task: SqlAzureDacpacDeployment@1
+             inputs:
+               azureSubscription: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+               AuthenticationType: 'server'
+               ServerName: 'abbserver56.database.windows.net'
+               DatabaseName: '$(DatabaseName)'
+               SqlUsername: '$(SQLUSER)'
+               SqlPassword: '$(SQLPass)'
+               deployType: 'DacpacTask'
+               DeploymentAction: 'Publish'
+               DacpacFile: '$(pipeline.workspace)/**/*.dacpac'
+               IpDetectionMethod: 'AutoDetect'
+
+
+
+
+
+- stage: Deploy
+  displayName: AKS Stage
+  dependsOn: DB_Build
+  condition: succeeded()
+  jobs:
+    - deployment: AKS
+      displayName: 'AKS Deployment'
+      environment: 'dev'
+      pool:
+        name: 'Default'
+        demands:
+        - agent.name -equals dockervm
+      strategy:
+       runOnce:
+         deploy:
+          steps:
+          - task: Kubernetes@1
+            inputs:
+              connectionType: 'Azure Resource Manager'
+              azureSubscriptionEndpoint: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+              azureResourceGroup: 'abbAKSRG'
+              kubernetesCluster: 'abbaks456'
+              command: 'apply'
+              useConfigurationFile: true
+              configuration: '$(pipeline.workspace)/drop/mhc-aks.yaml'
+              secretType: 'dockerRegistry'
+              containerRegistryType: 'Azure Container Registry'
+              azureSubscriptionEndpointForSecrets: 'Free Trial (b53f3d4a-e250-41ce-bc28-6b7f37068efb)'
+              azureContainerRegistry: 'abbtestacr456.azurecr.io'
+              secretName: 'acrsecret'
